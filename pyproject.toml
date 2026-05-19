@@ -1,0 +1,16 @@
+[tool.poetry]
+name = "python-ymodem-mqtt-ota"
+version = "0.1.0"
+description = "A project for OTA firmware updates using Ymodem protocol over MQTT."
+authors = ["Your Name <youremail@example.com>"]
+license = "MIT"
+
+[tool.poetry.dependencies]
+python = "^3.8"
+paho-mqtt = "^1.6.1"
+pyserial = "^3.5"
+pyYmodem = "^1.0.0"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"

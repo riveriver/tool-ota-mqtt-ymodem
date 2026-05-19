@@ -1,0 +1,5 @@
+aiofiles
+paho-mqtt
+pyserial
+ymodem
+click

@@ -1,0 +1,2 @@
+[console_scripts]
+ymodem = ymodem.__main__:main
