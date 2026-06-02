@@ -1,3 +1,7 @@
+"""
+OTA CLI Test with Fault Injection
+用于测试OTA在各种网络故障条件下的表现
+"""
 import os
 import sys
 import paho.mqtt.client as mqtt
@@ -9,10 +13,11 @@ try:
     _HAS_MSVCRT = True
 except Exception:
     _HAS_MSVCRT = False
-# show password input (do not hide) per user request
+
 from firmware_selector import select_firmware
 from mqtt_client import MQTTClient
-from ymodem import Ymodem
+from ymodem_fault_injector import Ymodem, FaultConfig
+
 
 def on_mqtt_connect(client, userdata, flags, rc):
     reasons = {
@@ -36,8 +41,54 @@ def build_progress_topic(publish_topic):
         raise ValueError("Invalid topic format. Expected: /ota/upgrade/<xxx>/<xxx>")
     return topic, f"/ota/progress/{parts[3]}/{parts[4]}"
 
+
+def configure_faults(config: FaultConfig) -> None:
+    """Interactive fault configuration"""
+    print("\n=== Fault Injection Configuration ===")
+    print("Available preset scenarios:")
+    print("  1. high_latency   - High network latency (500-2000ms delays)")
+    print("  2. packet_loss    - Random ACK drops (~15% loss rate)")
+    print("  3. intermittent   - Intermittent issues (5% loss + delays)")
+    print("  4. corrupted_data - Data corruption (10% corruption rate)")
+    print("  5. duplicate_acks - Duplicate ACK responses (20% rate)")
+    print("  0. custom         - Manual configuration")
+    
+    choice = input("Select scenario (0-5) [default: 0 - no faults]: ").strip() or "0"
+    
+    if choice in ['1', '2', '3', '4', '5']:
+        scenarios = {
+            '1': 'high_latency',
+            '2': 'packet_loss',
+            '3': 'intermittent',
+            '4': 'corrupted_data',
+            '5': 'duplicate_acks',
+        }
+        config.scenario = scenarios[choice]
+    else:
+        # Custom configuration
+        print("\n=== Custom Fault Configuration ===")
+        
+        ack_loss = input("ACK loss probability (0.0-1.0, default 0.0): ").strip() or "0.0"
+        config.ack_loss_probability = float(ack_loss)
+        
+        ack_delay = input("ACK delay in ms (default 0): ").strip() or "0"
+        config.ack_delay_ms = int(ack_delay)
+        
+        dup_ack = input("Duplicate ACK probability (0.0-1.0, default 0.0): ").strip() or "0.0"
+        config.duplicate_ack_probability = float(dup_ack)
+        
+        data_corrupt = input("Data corruption probability (0.0-1.0, default 0.0): ").strip() or "0.0"
+        config.data_corruption_probability = float(data_corrupt)
+        
+        print(f"\nCustom fault config applied:")
+        print(f"  ACK loss: {config.ack_loss_probability}")
+        print(f"  ACK delay: {config.ack_delay_ms}ms")
+        print(f"  Duplicate ACK: {config.duplicate_ack_probability}")
+        print(f"  Data corruption: {config.data_corruption_probability}")
+
+
 def main():
-    print("Welcome to the OTA Firmware Update CLI")
+    print("Welcome to the OTA Firmware Update Test CLI with Fault Injection")
 
     mqtt_client = None
     topic = None
@@ -46,7 +97,6 @@ def main():
     accept_responses = threading.Event()
 
     def _key_monitor(ev: threading.Event):
-        # Monitor keyboard for Ctrl+Q (0x11). On Windows use msvcrt, otherwise fallback to stdin select.
         if _HAS_MSVCRT:
             while not ev.is_set():
                 try:
@@ -60,7 +110,6 @@ def main():
                     pass
                 time.sleep(0.05)
         else:
-            # Fallback for Unix-like: use select on stdin
             try:
                 import sys, select, tty, termios
                 fd = sys.stdin.fileno()
@@ -75,15 +124,13 @@ def main():
                             ev.set()
                             return
             except Exception:
-                # If fallback fails, do nothing; Ctrl+C remains available
                 return
 
     try:
-        # Connect to MQTT broker (defaults provided)
+        # Connect to MQTT broker
         mqtt_broker = input("Enter MQTT broker address (default 210.0.159.242): ") or "210.0.159.242"
         mqtt_port = int(input("Enter MQTT broker port (default 1883): ") or 1883)
 
-        # Optional username/password (defaults provided)
         username = input("MQTT username (leave empty to use default 'hkcrctest'): ") or "hkcrctest"
         password = input("MQTT password (visible, leave empty to use default 'crcHK3130'): ") or "crcHK3130"
 
@@ -92,7 +139,7 @@ def main():
             mqtt_client.set_credentials(username, password)
         mqtt_client.connect(on_connect=on_mqtt_connect)
 
-        # Start keyboard monitor for Ctrl+Q
+        # Start keyboard monitor
         key_thread = threading.Thread(target=_key_monitor, args=(stop_event,), daemon=True)
         key_thread.start()
 
@@ -106,11 +153,14 @@ def main():
             print(str(err))
             sys.exit(1)
 
-        # Ask whether to wait for 'C' before starting transfer
+        # Configure faults
+        fault_config = FaultConfig()
+        configure_faults(fault_config)
+
         wait_choice = input("Wait for 'C' from receiver before starting transfer? (Y/n) [default Y]: ") or "Y"
         wait_for_crc = False if (wait_choice.lower() == 'n') else True
 
-        # Subscribe to topic(s) to receive receiver responses
+        # Setup response queue
         resp_queue = queue.Queue()
 
         def _drain_queue(q: queue.Queue):
@@ -123,7 +173,6 @@ def main():
         def _on_message(tpc, payload):
             try:
                 if accept_responses.is_set() and tpc == response_topic:
-                    # Only response-topic payloads should drive the Ymodem state machine.
                     resp_queue.put((tpc, payload, time.monotonic()))
                     print(f"{tpc} recv: {repr(payload)}")
             except Exception:
@@ -132,7 +181,7 @@ def main():
         mqtt_client.set_on_message(_on_message)
         mqtt_client.subscribe(response_topic)
 
-        # Select firmware file AFTER topic is entered
+        # Select firmware
         firmware_path = select_firmware()
         if not firmware_path:
             print("No firmware file selected. Exiting.")
@@ -143,15 +192,19 @@ def main():
         mqtt_client.publish(command_topic, "craner#AT+OTASTART")
         print(f"Waiting for device to respond with 'C' (timeout {180}s)...")
 
-        # Initialize Ymodem for firmware transfer
-        ymodem = Ymodem()
+        # Initialize Ymodem with fault injection
+        ymodem = Ymodem(fault_config=fault_config)
 
-        # Send firmware file using Ymodem with handshake/ACKs
-        print(f"Sending firmware file '{firmware_path}' to topic '{topic}'...")
+        # Start transfer
+        print(f"\nSending firmware file '{firmware_path}' to topic '{topic}'...")
         print(f"Listening progress/response on '{response_topic}'")
         print("Press Ctrl+Q to abort transfer.")
+        print("=" * 60)
+        
         _drain_queue(resp_queue)
         accept_responses.set()
+        
+        start_time = time.time()
         with open(firmware_path, 'rb') as firmware_file:
             success = ymodem.send(
                 firmware_file,
@@ -164,10 +217,14 @@ def main():
                 initial_crc_timeout=180,
                 block0_timeout=180,
             )
+            elapsed = time.time() - start_time
+            
+            print("=" * 60)
             if success:
-                print("Firmware transfer completed.")
+                print(f"✓ Firmware transfer completed successfully in {elapsed:.1f}s")
             else:
-                print("Firmware transfer failed.")
+                print(f"✗ Firmware transfer failed after {elapsed:.1f}s")
+                
     except KeyboardInterrupt:
         print("\nInterrupted by user (KeyboardInterrupt). Cleaning up and exiting...")
         stop_event.set()
@@ -179,7 +236,6 @@ def main():
             pass
         sys.exit(130)
     finally:
-        # stop key monitor thread
         try:
             accept_responses.clear()
             stop_event.set()
@@ -187,12 +243,12 @@ def main():
                 key_thread.join(timeout=1.0)
         except Exception:
             pass
-        # Ensure we disconnect cleanly if still connected
         try:
             if mqtt_client is not None:
                 mqtt_client.disconnect()
         except Exception:
             pass
+
 
 if __name__ == "__main__":
     main()
