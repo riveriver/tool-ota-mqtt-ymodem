@@ -14,6 +14,14 @@ from firmware_selector import select_firmware
 from mqtt_client import MQTTClient
 from ymodem import Ymodem
 
+MQTT_BROKER = "mqtt.craner.hk"
+MQTT_PORT = 1883
+MQTT_USERNAME = "hkcrctest"
+MQTT_PASSWORD = "crcHK3130"
+OTA_COMMAND_PAYLOAD = "craner#AT+OTA=1"
+OTA_START_TIMEOUT = 180
+OTA_COMMAND_INTERVAL = 10
+
 def on_mqtt_connect(client, userdata, flags, rc):
     reasons = {
         0: "Connection accepted",
@@ -27,14 +35,54 @@ def on_mqtt_connect(client, userdata, flags, rc):
     print("Connected to MQTT broker with result code " + str(rc) + " (" + reason + ")")
 
 
-def build_progress_topic(publish_topic):
-    topic = (publish_topic or "").strip()
-    parts = topic.split('/')
-    if len(parts) != 5 or parts[0] != '' or parts[1] != 'ota' or parts[2] != 'upgrade':
-        raise ValueError("Invalid topic format. Expected: /ota/upgrade/<xxx>/<xxx>")
-    if not parts[3] or not parts[4]:
-        raise ValueError("Invalid topic format. Expected: /ota/upgrade/<xxx>/<xxx>")
-    return topic, f"/ota/progress/{parts[3]}/{parts[4]}"
+def build_topics(device_id):
+    device = (device_id or "").strip().strip("/")
+    if not device:
+        raise ValueError("Device ID cannot be empty. Expected something like: ais007")
+    return (
+        f"ai_satefy/{device}/ota/server/hook",
+        f"ai_satefy/{device}/ota/hook/server",
+        f"ai_satefy/{device}/system/server/hook",
+    )
+
+
+def wait_for_ota_start_signal(mqtt_client, command_topic, response_queue, stop_event):
+    deadline = time.time() + OTA_START_TIMEOUT
+    next_command_at = 0
+    start_signal = ord("C")
+
+    print(
+        f"Waiting for OTA start signal on response topic (timeout {OTA_START_TIMEOUT}s)..."
+    )
+    while time.time() < deadline:
+        if stop_event.is_set():
+            return False
+
+        now = time.time()
+        if now >= next_command_at:
+            mqtt_client.publish(command_topic, OTA_COMMAND_PAYLOAD)
+            print(
+                f"Published OTA command to '{command_topic}', next retry in {OTA_COMMAND_INTERVAL}s."
+            )
+            next_command_at = now + OTA_COMMAND_INTERVAL
+
+        remaining = max(0.1, min(0.5, deadline - now))
+        try:
+            item = response_queue.get(timeout=remaining)
+        except queue.Empty:
+            continue
+
+        if item is None:
+            continue
+
+        payload = item[1] if isinstance(item, tuple) and len(item) >= 2 else item
+        payload_bytes = payload.encode(errors="ignore") if isinstance(payload, str) else payload
+        if any(b == start_signal for b in payload_bytes):
+            print("Received OTA start signal 'C'.")
+            return True
+
+    print(f"Timed out waiting for OTA start signal after {OTA_START_TIMEOUT}s.")
+    return False
 
 def main():
     print("Welcome to the OTA Firmware Update CLI")
@@ -79,34 +127,21 @@ def main():
                 return
 
     try:
-        # Connect to MQTT broker (defaults provided)
-        mqtt_broker = input("Enter MQTT broker address (default 210.0.159.242): ") or "210.0.159.242"
-        mqtt_port = int(input("Enter MQTT broker port (default 1883): ") or 1883)
-
-        # Optional username/password (defaults provided)
-        username = input("MQTT username (leave empty to use default 'hkcrctest'): ") or "hkcrctest"
-        password = input("MQTT password (visible, leave empty to use default 'crcHK3130'): ") or "crcHK3130"
-
-        mqtt_client = MQTTClient(mqtt_broker, mqtt_port)
-        if username:
-            mqtt_client.set_credentials(username, password)
+        mqtt_client = MQTTClient(MQTT_BROKER, MQTT_PORT)
+        mqtt_client.set_credentials(MQTT_USERNAME, MQTT_PASSWORD)
         mqtt_client.connect(on_connect=on_mqtt_connect)
 
         # Start keyboard monitor for Ctrl+Q
         key_thread = threading.Thread(target=_key_monitor, args=(stop_event,), daemon=True)
         key_thread.start()
 
-        # Select and validate publish topic, and build progress response topic
-        topic_input = input("Enter publish topic (format: /ota/upgrade/<xxx>/<xxx>) [default /ota/upgrade/tc42/atc01]: ") or "/ota/upgrade/tc42/atc01"
+        # Select device id and build fixed publish/response topics
+        topic_input = input("Enter device ID (default ais007): ") or "ais007"
         try:
-            topic, response_topic = build_progress_topic(topic_input)
+            topic, response_topic, command_topic = build_topics(topic_input)
         except ValueError as err:
             print(str(err))
             sys.exit(1)
-
-        # Ask whether to wait for 'C' before starting transfer
-        wait_choice = input("Wait for 'C' from receiver before starting transfer? (Y/n) [default Y]: ") or "Y"
-        wait_for_crc = False if (wait_choice.lower() == 'n') else True
 
         # Subscribe to topic(s) to receive receiver responses
         resp_queue = queue.Queue()
@@ -142,9 +177,14 @@ def main():
         # Send firmware file using Ymodem with handshake/ACKs
         print(f"Sending firmware file '{firmware_path}' to topic '{topic}'...")
         print(f"Listening progress/response on '{response_topic}'")
+        print(f"Using OTA command topic '{command_topic}'")
         print("Press Ctrl+Q to abort transfer.")
         _drain_queue(resp_queue)
         accept_responses.set()
+        if not wait_for_ota_start_signal(mqtt_client, command_topic, resp_queue, stop_event):
+            accept_responses.clear()
+            print("OTA start handshake failed. Exiting without sending firmware.")
+            return
         with open(firmware_path, 'rb') as firmware_file:
             success = ymodem.send(
                 firmware_file,
@@ -153,7 +193,7 @@ def main():
                 recv_queue=resp_queue,
                 timeout=30,
                 should_stop=stop_event.is_set,
-                wait_for_initial_crc=wait_for_crc,
+                wait_for_initial_crc=False,
             )
             if success:
                 print("Firmware transfer completed.")
