@@ -4,10 +4,15 @@ class MQTTClient:
         self.broker = broker
         self.port = port
         self.client_id = client_id or "mqtt_client"
-        # paho-mqtt 2.x introduced callback_api_version; prefer v1 for compatibility
+        # paho-mqtt 2.x introduced callback_api_version; prefer VERSION1 for
+        # compatibility with the callback signatures used in this project.
         try:
-            self.client = mqtt.Client(client_id=self.client_id, callback_api_version=1)
-        except TypeError:
+            callback_api = mqtt.CallbackAPIVersion.VERSION1
+            self.client = mqtt.Client(
+                client_id=self.client_id,
+                callback_api_version=callback_api,
+            )
+        except (AttributeError, TypeError):
             # Older paho-mqtt versions don't accept callback_api_version
             self.client = mqtt.Client(client_id=self.client_id)
 

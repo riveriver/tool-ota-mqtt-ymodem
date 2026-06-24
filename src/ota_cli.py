@@ -1,9 +1,9 @@
-import os
 import sys
-import paho.mqtt.client as mqtt
+import json
 import queue
 import time
 import threading
+from pathlib import Path
 try:
     import msvcrt
     _HAS_MSVCRT = True
@@ -14,13 +14,33 @@ from firmware_selector import select_firmware
 from mqtt_client import MQTTClient
 from ymodem import Ymodem
 
-MQTT_BROKER = "mqtt.craner.hk"
-MQTT_PORT = 1883
-MQTT_USERNAME = "hkcrctest"
-MQTT_PASSWORD = "crcHK3130"
-OTA_COMMAND_PAYLOAD = "craner#AT+OTA=1"
 OTA_START_TIMEOUT = 180
 OTA_COMMAND_INTERVAL = 10
+CONFIG_PATH = Path(__file__).with_name("ota_config.json")
+
+
+def load_config():
+    if not CONFIG_PATH.is_file():
+        raise FileNotFoundError(f"Config file not found: {CONFIG_PATH}")
+
+    with CONFIG_PATH.open("r", encoding="utf-8") as f:
+        config = json.load(f)
+
+    required = [
+        "mqtt_broker",
+        "mqtt_port",
+        "mqtt_username",
+        "mqtt_password",
+        "ota_command_payload",
+        "ota_command_topic",
+        "ota_response_topic",
+        "ota_publish_topic",
+    ]
+    missing = [key for key in required if key not in config]
+    if missing:
+        raise KeyError(f"Missing required config keys: {', '.join(missing)}")
+
+    return config
 
 def on_mqtt_connect(client, userdata, flags, rc):
     reasons = {
@@ -35,18 +55,7 @@ def on_mqtt_connect(client, userdata, flags, rc):
     print("Connected to MQTT broker with result code " + str(rc) + " (" + reason + ")")
 
 
-def build_topics(device_id):
-    device = (device_id or "").strip().strip("/")
-    if not device:
-        raise ValueError("Device ID cannot be empty. Expected something like: ais007")
-    return (
-        f"ai_satefy/{device}/ota/server/hook",
-        f"ai_satefy/{device}/ota/hook/server",
-        f"ai_satefy/{device}/system/server/hook",
-    )
-
-
-def wait_for_ota_start_signal(mqtt_client, command_topic, response_queue, stop_event):
+def wait_for_ota_start_signal(mqtt_client, command_topic, ota_command_payload, response_queue, stop_event):
     deadline = time.time() + OTA_START_TIMEOUT
     next_command_at = 0
     start_signal = ord("C")
@@ -60,7 +69,7 @@ def wait_for_ota_start_signal(mqtt_client, command_topic, response_queue, stop_e
 
         now = time.time()
         if now >= next_command_at:
-            mqtt_client.publish(command_topic, OTA_COMMAND_PAYLOAD)
+            mqtt_client.publish(command_topic, ota_command_payload)
             print(
                 f"Published OTA command to '{command_topic}', next retry in {OTA_COMMAND_INTERVAL}s."
             )
@@ -92,6 +101,23 @@ def main():
     stop_event = threading.Event()
     key_thread = None
     accept_responses = threading.Event()
+    config = load_config()
+    topic = config["ota_publish_topic"]
+    response_topic = config["ota_response_topic"]
+    command_topic = config["ota_command_topic"]
+
+    print("Loaded MQTT/OTA configuration:")
+    print(f"  Broker: {config['mqtt_broker']}:{config['mqtt_port']}")
+    print(f"  Username: {config['mqtt_username']}")
+    print(f"  Publish topic: {topic}")
+    print(f"  Response topic: {response_topic}")
+    print(f"  Command topic: {command_topic}")
+    print(f"  OTA command payload: {config['ota_command_payload']}")
+
+    confirm = input('Type yes to confirm the configuration and continue: ').strip().lower()
+    if confirm != "yes":
+        print("Configuration not confirmed. Exiting.")
+        return
 
     def _key_monitor(ev: threading.Event):
         # Monitor keyboard for Ctrl+Q (0x11). On Windows use msvcrt, otherwise fallback to stdin select.
@@ -127,21 +153,13 @@ def main():
                 return
 
     try:
-        mqtt_client = MQTTClient(MQTT_BROKER, MQTT_PORT)
-        mqtt_client.set_credentials(MQTT_USERNAME, MQTT_PASSWORD)
+        mqtt_client = MQTTClient(config["mqtt_broker"], config["mqtt_port"])
+        mqtt_client.set_credentials(config["mqtt_username"], config["mqtt_password"])
         mqtt_client.connect(on_connect=on_mqtt_connect)
 
         # Start keyboard monitor for Ctrl+Q
         key_thread = threading.Thread(target=_key_monitor, args=(stop_event,), daemon=True)
         key_thread.start()
-
-        # Select device id and build fixed publish/response topics
-        topic_input = input("Enter device ID (default ais007): ") or "ais007"
-        try:
-            topic, response_topic, command_topic = build_topics(topic_input)
-        except ValueError as err:
-            print(str(err))
-            sys.exit(1)
 
         # Subscribe to topic(s) to receive receiver responses
         resp_queue = queue.Queue()
@@ -181,7 +199,13 @@ def main():
         print("Press Ctrl+Q to abort transfer.")
         _drain_queue(resp_queue)
         accept_responses.set()
-        if not wait_for_ota_start_signal(mqtt_client, command_topic, resp_queue, stop_event):
+        if not wait_for_ota_start_signal(
+            mqtt_client,
+            command_topic,
+            config["ota_command_payload"],
+            resp_queue,
+            stop_event,
+        ):
             accept_responses.clear()
             print("OTA start handshake failed. Exiting without sending firmware.")
             return

@@ -1,0 +1,10 @@
+{
+  "mqtt_broker": "mqtt.craner.hk",
+  "mqtt_port": 1883,
+  "mqtt_username": "hkcrctest",
+  "mqtt_password": "crcHK3130",
+  "ota_command_payload": "craner#AT+OTA=1",
+  "ota_publish_topic": "ai_satefy/ais007/ota/server/hook",
+  "ota_response_topic": "ai_satefy/ais007/ota/hook/server",
+  "ota_command_topic": "ai_satefy/ais007/system/server/hook"
+}
