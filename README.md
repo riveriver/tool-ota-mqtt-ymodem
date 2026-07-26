@@ -1,99 +1,142 @@
-# python-ymodem-mqtt-ota
+# Craner LTE MQTT YMODEM OTA Tool
 
-This project implements an Over-The-Air (OTA) firmware update mechanism using the Ymodem protocol and MQTT for communication. It allows users to select firmware files and publish them to a specified MQTT topic for remote devices to download and update.
+这个工具是 `craner_sub_atc` 项目的 OTA 上位机，用 Python 通过 MQTT 与 4G LTE 模块通信，并用 YMODEM 协议把 MCUboot signed update image 发送到设备应用区。
 
-## Project Structure
+设备端分工：
 
-```
-python-ymodem-mqtt-ota
-├── src
-│   ├── __init__.py
-│   ├── ota_cli.py          # Command-line interface for OTA process
-│   ├── firmware_selector.py # Functionality to select firmware files
-│   ├── mqtt_client.py      # MQTT client management
-│   ├── ymodem.py           # Ymodem protocol implementation
-│   ├── uart_serial.py      # UART serial communication management
-│   └── utils.py            # Utility functions
-├── tests
-│   ├── test_ymodem.py      # Unit tests for Ymodem protocol
-│   └── test_mqtt.py        # Unit tests for MQTT client
-├── scripts
-│   └── publish_firmware.py  # Script to publish firmware files
-├── requirements.txt         # Project dependencies
-├── pyproject.toml          # Project configuration
-├── .gitignore               # Files to ignore in version control
-└── README.md                # Project documentation
+```text
+LTE/YMODEM 只负责接收固件并写入 MCUboot slot1
+mcumgr 负责 image test / confirm / reset
+MCUboot 负责 swap / rollback
 ```
 
-## Installation
+## MQTT Topic 约定
 
-To install the required dependencies, run:
+LTE 模块已配置的 topic index：
 
+| LTE index | 配置字段 | 方向 | 用途 |
+| ---: | --- | --- | --- |
+| `1` | `ota_command_topic` | PC -> LTE -> MCU | 发送 OTA 启动命令 |
+| `1` | `system_response_topic` | MCU -> LTE -> PC | 接收 ASCII key-value 状态响应 |
+| `2` | `ota_publish_topic` | PC -> LTE -> MCU | 发送 YMODEM 固件包 |
+| `2` | `ota_response_topic` | MCU -> LTE -> PC | 接收 YMODEM 控制字节 |
+
+PC 侧 MQTT payload 不需要添加 `N,` 前缀。LTE 模块会在串口侧自动输出：
+
+```text
+1,device_id
+1,ota_start <short_id>
+2,<YMODEM packet>
 ```
-pip install -r requirements.txt
+
+设备返回 YMODEM 控制字节时，MCU 写给 LTE 模块：
+
+```text
+2,<C/ACK/NAK/CAN>
 ```
 
-## Usage
+上位机在 `ota_response_topic` 收到的 payload 是逗号后的原始控制字节。
 
-Below are concrete steps and examples to run the tool on Windows (PowerShell) or any shell with Python available.
+设备返回 ASCII 状态时，MCU 写给 LTE 模块：
 
-1) Install dependencies
+```text
+1,<key-value response>
+```
+
+上位机在 `system_response_topic` 原样打印这些 key-value 响应。
+
+## 安装
 
 ```powershell
-cd tool\python-ymodem-mqtt-ota
-python3 -m pip install -r requirements.txt
+cd tool\tool-ota-mqtt-ymodem
+python -m pip install -r requirements.txt
 ```
 
-2) Interactive CLI (recommended)
+## 配置
 
-- Run the CLI which guides you through selecting broker, topic and firmware:
+编辑：
+
+```text
+src\ota_config.json
+```
+
+示例：
+
+```json
+{
+  "mqtt_broker": "mqtt.craner.hk",
+  "mqtt_port": 1883,
+  "mqtt_username": "hkcrctest",
+  "mqtt_password": "crcHK3130",
+  "ota_command_payload": "ota_start",
+  "ota_command_topic": "ai_satefy/ais999/system/server/hook",
+  "system_response_topic": "ai_satefy/ais999/system/hook/server",
+  "ota_publish_topic": "ai_satefy/ais999/ota/server/hook",
+  "ota_response_topic": "ai_satefy/ais999/ota/hook/server"
+}
+```
+
+## 使用
+
+先在固件工程生成 OTA 镜像：
 
 ```powershell
-cd tool\python-ymodem-mqtt-ota\src
-python3 ota_cli.py
+.\build.ps1 -OtaImages
 ```
 
-- Interactive flow summary:
-	- Enter MQTT broker address (default `210.0.159.242`).
-	- Enter MQTT port (default `1883`).
-	- Enter MQTT username/password (defaults: `hkcrctest` / `crcHK3130`). Password input is visible.
-	- Enter the MQTT topic to publish the firmware to.
-	- Choose a firmware file when prompted (the CLI calls `select_firmware()`).
-	- The tool sends the firmware using the Ymodem protocol over MQTT and listens for receiver responses (default timeout in `ota_cli.py` is 180 seconds).
+需要发送的文件是：
 
-3) Non-interactive / script mode (automation)
+```text
+build\craner_general_stm32h743vit6\ota_images\app_update_signed.bin
+```
 
-- The included script `scripts/publish_firmware.py` can be used from the project root. Example:
+启动上位机：
 
 ```powershell
-cd tool\python-ymodem-mqtt-ota
-python scripts\publish_firmware.py <broker_address> <topic> <firmware_file>
+cd tool\tool-ota-mqtt-ymodem\src
+python ota_cli.py
 ```
 
-- Note: the current `publish_firmware.py` attempts to use the helper `select_firmware()`; if you want fully non-interactive behavior, pass a firmware path or modify the script to use the provided CLI argument directly.
+流程：
 
-4) Defaults and important notes
+1. 工具连接 MQTT broker。
+2. 工具订阅 `system_response_topic` 和 `ota_response_topic`。
+3. 用户选择 `app_update_signed.bin`。
+4. 工具向 `ota_command_topic` 发布 `device_id`，读取 4 位 short id。
+5. 工具向 `ota_command_topic` 周期性发布 `ota_start <short_id>`。
+6. 设备启动 OTA 后通过 `ota_response_topic` 返回 YMODEM `C`。
+7. 工具向 `ota_publish_topic` 发送 YMODEM block0、数据包、EOT、结束包。
+8. 设备接收完成后进入 `ready_for_mcumgr`。
+9. 工具自动查询 `ota_status`、`image_list` 和 `image_info <slot1_hash>`。
+10. 用户可选择执行 `image_test <short_id>` 和 `reset <short_id>`。
 
-- Default broker: `210.0.159.242`
-- Default port: `1883`
-- Default username: `hkcrctest`
-- Default password: `crcHK3130` (visible by design in the CLI)
-- Main CLI file: `tool/python-ymodem-mqtt-ota/src/ota_cli.py`
-- Publish script: `tool/python-ymodem-mqtt-ota/scripts/publish_firmware.py`
-- The Ymodem transfer is implemented in `src/ymodem.py` and the MQTT wrapper in `src/mqtt_client.py`.
+传输过程中可以按 `Ctrl+Q` 中止，工具会尝试向 OTA 数据 topic 发送 `CAN CAN`。
 
-5) Troubleshooting
+## 后续 mcumgr 操作
 
-- If dependency installation fails, ensure you are using a supported Python version and that `pip` is up-to-date.
-- If MQTT connection fails, verify network access to the broker and credentials.
-- For automating in CI or scripts, consider editing `scripts/publish_firmware.py` to skip any interactive `select_firmware()` calls.
+固件写入 slot1 后，设备不会自动 test 或 reset。维护端需要执行：
 
-If you want, I can update `scripts/publish_firmware.py` to accept the firmware file strictly from the command line (non-interactive). 
+```powershell
+mcumgr --conntype udp --connstring=[设备IP]:1337 image list
+mcumgr --conntype udp --connstring=[设备IP]:1337 image test <slot1_hash>
+mcumgr --conntype udp --connstring=[设备IP]:1337 reset
+mcumgr --conntype udp --connstring=[设备IP]:1337 image confirm
+```
 
-## Contributing
+只有 4G、没有以太网的设备，可以通过 topic 1 执行等效操作：
 
-Contributions are welcome! Please feel free to submit a pull request or open an issue for any enhancements or bug fixes.
+```text
+device_id
+image_list
+image_info <hash>
+image_test <short_id>
+reset <short_id>
+image_confirm <short_id>
+```
 
-## License
+## 注意事项
 
-This project is licensed under the MIT License. See the LICENSE file for more details.
+- 不要发送 `zephyr.bin`、`zephyr.signed.confirmed.bin` 或 `app_initial_confirmed.bin`。
+- MQTT payload 必须按二进制处理，不能转 HEX 或 Base64。
+- YMODEM 1K 数据包是 1029 字节，LTE 模块串口侧带 `2,` 后是 1031 字节。
+- OTA 传输期间设备会暂停业务数据上报，减少 topic `3` 干扰。

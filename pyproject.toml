@@ -1,8 +1,8 @@
 [tool.poetry]
-name = "python-ymodem-mqtt-ota"
+name = "tool-ota-mqtt-ymodem"
 version = "0.1.0"
-description = "A project for OTA firmware updates using Ymodem protocol over MQTT."
-authors = ["Your Name <youremail@example.com>"]
+description = "Craner LTE MQTT YMODEM OTA host tool."
+authors = ["Craner"]
 license = "MIT"
 
 [tool.poetry.dependencies]
