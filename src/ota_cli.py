@@ -16,7 +16,8 @@ from ymodem import Ymodem
 
 OTA_START_TIMEOUT = 180
 OTA_COMMAND_INTERVAL = 10
-DEFAULT_OTA_COMMAND_PAYLOAD = "ota_start"
+SYSTEM_COMMAND_PREFIX = "craner#"
+DEFAULT_OTA_COMMAND_PAYLOAD = SYSTEM_COMMAND_PREFIX + "ota_start"
 SYSTEM_RESPONSE_TIMEOUT = 10
 CONFIG_PATH = Path(__file__).with_name("ota_config.json")
 
@@ -33,7 +34,8 @@ def load_config():
         "mqtt_port",
         "mqtt_username",
         "mqtt_password",
-        "ota_command_topic",
+        "device_short_id",
+        "system_command_topic",
         "system_response_topic",
         "ota_response_topic",
         "ota_publish_topic",
@@ -43,6 +45,15 @@ def load_config():
         raise KeyError(f"Missing required config keys: {', '.join(missing)}")
 
     config.setdefault("ota_command_payload", DEFAULT_OTA_COMMAND_PAYLOAD)
+    if not config["ota_command_payload"].startswith(SYSTEM_COMMAND_PREFIX):
+        config["ota_command_payload"] = (
+            SYSTEM_COMMAND_PREFIX + config["ota_command_payload"]
+        )
+
+    short_id = str(config["device_short_id"]).strip()
+    if len(short_id) != 4:
+        raise ValueError("device_short_id must be a 4-character short id")
+    config["device_short_id"] = short_id
 
     return config
 
@@ -83,6 +94,8 @@ def drain_queue(q: queue.Queue):
 
 
 def publish_system_command(mqtt_client, command_topic, command):
+    if not command.startswith(SYSTEM_COMMAND_PREFIX):
+        command = SYSTEM_COMMAND_PREFIX + command
     mqtt_client.publish(command_topic, command)
     print(f"system tx: {command}")
 
@@ -120,21 +133,6 @@ def collect_system_responses(system_queue, timeout=2.0):
             print(f"system rx: {text}")
 
     return responses
-
-
-def query_short_id(mqtt_client, command_topic, system_queue):
-    drain_queue(system_queue)
-    publish_system_command(mqtt_client, command_topic, "device_id")
-    response = wait_system_response(system_queue)
-    if response is None:
-        raise TimeoutError("Timed out waiting for device_id response")
-
-    fields = parse_key_value(response)
-    short_id = fields.get("short_id")
-    if not short_id or len(short_id) != 4:
-        raise ValueError(f"Invalid device_id response: {response}")
-
-    return short_id
 
 
 def wait_for_ota_start_signal(mqtt_client, command_topic, ota_command_payload, short_id, response_queue, stop_event):
@@ -188,7 +186,7 @@ def main():
     config = load_config()
     topic = config["ota_publish_topic"]
     response_topic = config["ota_response_topic"]
-    command_topic = config["ota_command_topic"]
+    command_topic = config["system_command_topic"]
     system_response_topic = config["system_response_topic"]
 
     print("Loaded MQTT/OTA configuration:")
@@ -198,6 +196,7 @@ def main():
     print(f"  System response topic (LTE publish index 1): {system_response_topic}")
     print(f"  OTA publish topic (LTE subscribe index 2): {topic}")
     print(f"  OTA response topic (LTE publish index 2): {response_topic}")
+    print(f"  Device short id: {config['device_short_id']}")
     print(f"  OTA command payload: {config['ota_command_payload']}")
 
     confirm = input('Type yes to confirm the configuration and continue: ').strip().lower()
@@ -280,8 +279,7 @@ def main():
         print(f"Listening for YMODEM control bytes on '{response_topic}'")
         print(f"Starting device OTA through '{command_topic}'")
         print("Press Ctrl+Q to abort transfer.")
-        short_id = query_short_id(mqtt_client, command_topic, system_queue)
-        print(f"Device short id: {short_id}")
+        short_id = config["device_short_id"]
         drain_queue(resp_queue)
         accept_responses.set()
         if not wait_for_ota_start_signal(
@@ -329,7 +327,7 @@ def main():
                     ).strip().lower()
                     if apply_choice == "test":
                         drain_queue(system_queue)
-                        publish_system_command(mqtt_client, command_topic, f"image_test {short_id}")
+                        publish_system_command(mqtt_client, command_topic, f"image_test {slot1_hash}")
                         wait_system_response(system_queue)
 
                         reset_choice = input(

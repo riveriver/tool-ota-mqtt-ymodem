@@ -16,7 +16,7 @@ LTE 模块已配置的 topic index：
 
 | LTE index | 配置字段 | 方向 | 用途 |
 | ---: | --- | --- | --- |
-| `1` | `ota_command_topic` | PC -> LTE -> MCU | 发送 OTA 启动命令 |
+| `1` | `system_command_topic` | PC -> LTE -> MCU | 发送 OTA 启动命令 |
 | `1` | `system_response_topic` | MCU -> LTE -> PC | 接收 ASCII key-value 状态响应 |
 | `2` | `ota_publish_topic` | PC -> LTE -> MCU | 发送 YMODEM 固件包 |
 | `2` | `ota_response_topic` | MCU -> LTE -> PC | 接收 YMODEM 控制字节 |
@@ -68,8 +68,9 @@ src\ota_config.json
   "mqtt_port": 1883,
   "mqtt_username": "hkcrctest",
   "mqtt_password": "crcHK3130",
-  "ota_command_payload": "ota_start",
-  "ota_command_topic": "ai_satefy/ais999/system/server/hook",
+  "device_short_id": "b6ba",
+  "ota_command_payload": "craner#ota_start",
+  "system_command_topic": "ai_satefy/ais999/system/server/hook",
   "system_response_topic": "ai_satefy/ais999/system/hook/server",
   "ota_publish_topic": "ai_satefy/ais999/ota/server/hook",
   "ota_response_topic": "ai_satefy/ais999/ota/hook/server"
@@ -102,13 +103,13 @@ python ota_cli.py
 1. 工具连接 MQTT broker。
 2. 工具订阅 `system_response_topic` 和 `ota_response_topic`。
 3. 用户选择 `app_update_signed.bin`。
-4. 工具向 `ota_command_topic` 发布 `device_id`，读取 4 位 short id。
-5. 工具向 `ota_command_topic` 周期性发布 `ota_start <short_id>`。
+4. 工具从 `ota_config.json` 读取用户预先填写的 `device_short_id`。
+5. 工具向 `system_command_topic` 周期性发布 `craner#ota_start <device_short_id>`。
 6. 设备启动 OTA 后通过 `ota_response_topic` 返回 YMODEM `C`。
 7. 工具向 `ota_publish_topic` 发送 YMODEM block0、数据包、EOT、结束包。
 8. 设备接收完成后进入 `ready_for_mcumgr`。
 9. 工具自动查询 `ota_status`、`image_list` 和 `image_info <slot1_hash>`。
-10. 用户可选择执行 `image_test <short_id>` 和 `reset <short_id>`。
+10. 用户可选择执行 `image_test <slot1_hash>` 和 `reset <device_short_id>`。
 
 传输过程中可以按 `Ctrl+Q` 中止，工具会尝试向 OTA 数据 topic 发送 `CAN CAN`。
 
@@ -129,9 +130,9 @@ mcumgr --conntype udp --connstring=[设备IP]:1337 image confirm
 device_id
 image_list
 image_info <hash>
-image_test <short_id>
+image_test <hash>
 reset <short_id>
-image_confirm <short_id>
+image_confirm <hash>
 ```
 
 ## 注意事项

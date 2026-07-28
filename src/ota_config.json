@@ -3,9 +3,10 @@
   "mqtt_port": 1883,
   "mqtt_username": "hkcrctest",
   "mqtt_password": "crcHK3130",
-  "ota_command_payload": "ota_start",
-  "ota_command_topic": "ai_satefy/ais999/system/server/hook",
-  "system_response_topic": "ai_satefy/ais999/system/hook/server",
-  "ota_publish_topic": "ai_satefy/ais999/ota/server/hook",
-  "ota_response_topic": "ai_satefy/ais999/ota/hook/server"
+  "device_short_id": "b6ba",
+  "ota_command_payload": "craner#ota_start",
+  "system_command_topic": "atc/tm101/tc2/system/server/client",
+  "system_response_topic": "atc/tm101/tc2/system/client/server",
+  "ota_publish_topic": "atc/tm101/tc2/ota/server/client",
+  "ota_response_topic": "atc/tm101/tc2/ota/client/server"
 }

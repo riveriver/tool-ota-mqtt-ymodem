@@ -73,12 +73,34 @@ class Ymodem:
                     # swallow publish errors; caller may detect failures separately
                     pass
 
+            pending_response = bytearray()
+
             def wait_for(expected_set, timeout_sec):
                 """Wait for one of expected bytes (set of ints) from recv_queue within timeout."""
                 end = time.time() + timeout_sec
+
+                def take_expected(payload_bytes):
+                    for idx, b in enumerate(payload_bytes):
+                        if b in expected_set:
+                            pending_response.extend(payload_bytes[idx + 1:])
+                            return b
+                    return None
+
                 while time.time() < end:
                     if callable(should_stop) and should_stop():
                         return None
+
+                    if pending_response:
+                        payload_bytes = bytes(pending_response)
+                        pending_response.clear()
+                        b = take_expected(payload_bytes)
+                        if b is not None:
+                            print(
+                                f"Received buffered response: {repr(payload_bytes)}",
+                                flush=True,
+                            )
+                            return b
+
                     try:
                         item = recv_queue.get(timeout=0.5)
                     except Exception:
@@ -103,9 +125,9 @@ class Ymodem:
                     except Exception:
                         pass
                     # First, inspect raw bytes
-                    for b in payload_bytes:
-                        if b in expected_set:
-                            return b
+                    b = take_expected(payload_bytes)
+                    if b is not None:
+                        return b
                     # If not found, try interpreting payload as ASCII hex string (e.g. '06322c43')
                     try:
                         s = None
@@ -122,9 +144,9 @@ class Ymodem:
                                 if all(c in string.hexdigits for c in s2):
                                     try:
                                         hb = bytes.fromhex(s2)
-                                        for b in hb:
-                                            if b in expected_set:
-                                                return b
+                                        b = take_expected(hb)
+                                        if b is not None:
+                                            return b
                                     except Exception:
                                         pass
                     except Exception:
