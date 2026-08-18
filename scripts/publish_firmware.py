@@ -4,6 +4,8 @@ import paho.mqtt.client as mqtt
 from src.firmware_selector import select_firmware
 from src.ymodem import Ymodem
 
+MQTT_QOS = 2
+
 def on_connect(client, userdata, flags, rc):
     print("Connected with result code " + str(rc))
 
@@ -22,7 +24,7 @@ def publish_firmware(firmware_path, topic, broker):
         ymodem = Ymodem()
         ymodem.send(firmware_file)
 
-    client.publish(topic, firmware_path)
+    client.publish(topic, firmware_path, qos=MQTT_QOS)
     client.loop_stop()
     client.disconnect()
 

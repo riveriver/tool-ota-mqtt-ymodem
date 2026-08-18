@@ -1,4 +1,6 @@
 class MQTTClient:
+    DEFAULT_QOS = 2
+
     def __init__(self, broker, port=1883, client_id=None):
         import paho.mqtt.client as mqtt
         self.broker = broker
@@ -38,11 +40,11 @@ class MQTTClient:
         except Exception as e:
             print(f"Failed to set MQTT credentials: {e}")
 
-    def subscribe(self, topic):
+    def subscribe(self, topic, qos=DEFAULT_QOS):
         # Subscribe to a topic. Do not override the global on_message handler here;
         # use `set_on_message` to register a message handler.
-        self.client.subscribe(topic)
-        print(f"Subscribed to topic: {topic}")
+        self.client.subscribe(topic, qos=qos)
+        print(f"Subscribed to topic: {topic} (qos={qos})")
 
     def set_on_message(self, callback):
         """Set a global on_message callback.
@@ -58,8 +60,8 @@ class MQTTClient:
 
         self.client.on_message = _on_message
 
-    def publish(self, topic, payload):
-        result = self.client.publish(topic, payload)
+    def publish(self, topic, payload, qos=DEFAULT_QOS):
+        result = self.client.publish(topic, payload, qos=qos)
         # return the rc so caller can check success; also log
         try:
             rc = result.rc
@@ -67,7 +69,7 @@ class MQTTClient:
             # Older paho versions may return a tuple (rc, mid)
             rc = result[0] if isinstance(result, tuple) else None
         if rc == 0:
-            print(f"Message published to topic {topic}")
+            print(f"Message published to topic {topic} (qos={qos})")
         else:
             print(f"Failed to publish message to topic {topic} (rc={rc})")
         return rc
